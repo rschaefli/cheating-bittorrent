@@ -42,9 +42,9 @@ public class PeerCoordinator implements PeerListener
     // package local for access by CheckDownLoadersTask
     final static long CHECK_PERIOD = 20 * 1000; // 20 seconds
 
-    final static int MAX_CONNECTIONS = 24;
+    final static int MAX_CONNECTIONS = 80;
 
-    final static int MAX_UPLOADERS = 4;
+    final static int MAX_UPLOADERS = 6;
 
     // Approximation of the number of current uploaders.
     // Resynced by PeerChecker once in a while.
@@ -73,6 +73,9 @@ public class PeerCoordinator implements PeerListener
     private final CoordinatorListener listener;
 
     private TrackerClient client;
+    
+    //List of piece frequencies to be used to get rarest pieces first
+    private List<PieceFrequency> pieceFrequencies = new ArrayList<PieceFrequency>();
 
     public PeerCoordinator (byte[] id, MetaInfo metainfo, Storage storage,
         CoordinatorListener listener)
@@ -91,6 +94,11 @@ public class PeerCoordinator implements PeerListener
             }
         }
         Collections.shuffle(wantedPieces);
+        
+        //Start off frequencies of all pieces at 0
+        for(int i = 0; i < metainfo.getPieces(); i++){
+        	pieceFrequencies.add(new PieceFrequency(i, 0));
+        }
 
         // Install a timer to check the uploaders.
         timer.schedule(new PeerCheckerTask(this), CHECK_PERIOD, CHECK_PERIOD);
@@ -288,6 +296,10 @@ public class PeerCoordinator implements PeerListener
         if (listener != null) {
             listener.peerChange(this, peer);
         }
+        
+        synchronized(pieceFrequencies){
+        	pieceFrequencies.get(piece).addOne();
+        }
 
         synchronized (wantedPieces) {
             return wantedPieces.contains(new Integer(piece));
@@ -302,6 +314,14 @@ public class PeerCoordinator implements PeerListener
     {
         if (listener != null) {
             listener.peerChange(this, peer);
+        }
+        
+        synchronized (pieceFrequencies){
+        	for(int i =0; i<bitfield.size(); i++){
+        		if(bitfield.get(i)){
+        			pieceFrequencies.get(i).addOne();
+        		}
+        	}
         }
 
         synchronized (wantedPieces) {
@@ -325,30 +345,62 @@ public class PeerCoordinator implements PeerListener
         if (halted) {
             return -1;
         }
-
-        synchronized (wantedPieces) {
-            Integer piece = null;
-            Iterator it = wantedPieces.iterator();
-            while (piece == null && it.hasNext()) {
-                Integer i = (Integer)it.next();
-                if (havePieces.get(i.intValue())) {
-                    it.remove();
-                    piece = i;
-                }
-            }
-
-            if (piece == null) {
-                return -1;
-            }
-
-            // We add it back at the back of the list. It will be removed
-            // if gotPiece is called later. This means that the last
-            // couple of pieces might very well be asked from multiple
-            // peers but that is OK.
-            wantedPieces.add(piece);
-
-            return piece.intValue();
+        
+    	Integer piece = null;
+        //Select the rarest piece for selection
+        synchronized (pieceFrequencies){
+        	List<PieceFrequency> temp = new ArrayList<PieceFrequency>();
+        	
+        	for(int i = 0; i< pieceFrequencies.size(); i++){
+        		temp.add(new PieceFrequency(0,0));
+        	}
+        	Collections.copy(temp,  pieceFrequencies);
+        	Collections.sort(temp);
+        	
+        	//Loop through all pieces starting with rarest first
+        	for(int i = 0; i < temp.size() && piece == null; i++){
+        		//Rarest possible piece to get
+        		int possiblePiece = temp.get(i).getPieceNumber();
+        		for(int j = 0; j< wantedPieces.size(); j++){
+        			if(wantedPieces.get(j).intValue() == possiblePiece && havePieces.get(possiblePiece)){
+        				//We want the piece and peer has the piece
+        				piece = possiblePiece;
+        				pieceFrequencies.get(possiblePiece).setFrequency(pieceFrequencies.get(possiblePiece).getFrequency() + 999);
+        				break;
+        			}
+        		}
+        	}
         }
+        
+        if(piece != null){
+        	return piece.intValue();
+        }else{
+        	return -1;
+        }
+
+//        synchronized (wantedPieces) {
+//            Integer piece = null;
+//            Iterator it = wantedPieces.iterator();
+//            while (piece == null && it.hasNext()) {
+//                Integer i = (Integer)it.next();
+//                if (havePieces.get(i.intValue())) {
+//                    it.remove();
+//                    piece = i;
+//                }
+//            }
+//
+//            if (piece == null) {
+//                return -1;
+//            }
+//
+//            // We add it back at the back of the list. It will be removed
+//            // if gotPiece is called later. This means that the last
+//            // couple of pieces might very well be asked from multiple
+//            // peers but that is OK.
+//            wantedPieces.add(piece);
+//
+//            return piece.intValue();
+//        }
     }
 
     /**
@@ -445,6 +497,8 @@ public class PeerCoordinator implements PeerListener
 
         if (completed()) {
             client.interrupt();
+            //Exit the program when finished downloading the file.
+            System.exit(0);
         }
         return true;
     }
