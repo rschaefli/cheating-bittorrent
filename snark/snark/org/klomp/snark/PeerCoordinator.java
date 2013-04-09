@@ -42,7 +42,7 @@ public class PeerCoordinator implements PeerListener
     // package local for access by CheckDownLoadersTask
     final static long CHECK_PERIOD = 20 * 1000; // 20 seconds
 
-    final static int MAX_CONNECTIONS = 80;
+    final static int MAX_CONNECTIONS = 48;
 
     final static int MAX_UPLOADERS = 6;
 
@@ -94,15 +94,49 @@ public class PeerCoordinator implements PeerListener
             }
         }
         Collections.shuffle(wantedPieces);
+
+        // Install a timer to check the uploaders.
+        timer.schedule(new PeerCheckerTask(this), CHECK_PERIOD, CHECK_PERIOD);
         
         //Start off frequencies of all pieces at 0
         for(int i = 0; i < metainfo.getPieces(); i++){
         	pieceFrequencies.add(new PieceFrequency(i, 0));
         }
-
-        // Install a timer to check the uploaders.
-        timer.schedule(new PeerCheckerTask(this), CHECK_PERIOD, CHECK_PERIOD);
     }
+    
+    private class PieceFrequency implements Comparable<PieceFrequency> {
+    	int pieceNumber;
+    	int frequency;
+    	
+    	PieceFrequency(int pieceNumber, int frequency){
+    		this.pieceNumber = pieceNumber;
+    		this.frequency = frequency;
+    	}
+
+    	public int getPieceNumber() {
+    		return pieceNumber;
+    	}
+
+    	public void setPieceNumber(int pieceNumber) {
+    		this.pieceNumber = pieceNumber;
+    	}
+
+    	public int getFrequency() {
+    		return frequency;
+    	}
+
+    	public void setFrequency(int frequency) {
+    		this.frequency = frequency;
+    	}
+    	
+    	public void addOne(){
+    		frequency++;
+    	}
+    	
+    	public int compareTo(PieceFrequency pf){
+    		return ((pf.getFrequency() < frequency) ? 1 : (frequency < pf.getFrequency()) ? -1 : 0);
+    	}
+    } 
 
     public void setTracker (TrackerClient client)
     {
@@ -297,6 +331,7 @@ public class PeerCoordinator implements PeerListener
             listener.peerChange(this, peer);
         }
         
+        //We have seen the piece, add one to its frequency
         synchronized(pieceFrequencies){
         	pieceFrequencies.get(piece).addOne();
         }
@@ -315,14 +350,6 @@ public class PeerCoordinator implements PeerListener
         if (listener != null) {
             listener.peerChange(this, peer);
         }
-        
-        synchronized (pieceFrequencies){
-        	for(int i =0; i<bitfield.size(); i++){
-        		if(bitfield.get(i)){
-        			pieceFrequencies.get(i).addOne();
-        		}
-        	}
-        }
 
         synchronized (wantedPieces) {
             Iterator it = wantedPieces.iterator();
@@ -333,6 +360,16 @@ public class PeerCoordinator implements PeerListener
                 }
             }
         }
+        
+        //Loop through pieces in the bitfield, and add to each piece's frequency
+        synchronized (pieceFrequencies){
+        	for(int i =0; i<bitfield.size(); i++){
+        		if(bitfield.get(i)){
+        			pieceFrequencies.get(i).addOne();
+        		}
+        	}
+        }
+        
         return false;
     }
 
@@ -349,57 +386,36 @@ public class PeerCoordinator implements PeerListener
     	Integer piece = null;
         //Select the rarest piece for selection
         synchronized (pieceFrequencies){
-        	List<PieceFrequency> temp = new ArrayList<PieceFrequency>();
-        	
-        	for(int i = 0; i< pieceFrequencies.size(); i++){
-        		temp.add(new PieceFrequency(0,0));
-        	}
-        	Collections.copy(temp,  pieceFrequencies);
-        	Collections.sort(temp);
+        	List<PieceFrequency> copy = new ArrayList<PieceFrequency>(pieceFrequencies);
+        	//Sort by frequency
+        	Collections.sort(copy);
         	
         	//Loop through all pieces starting with rarest first
-        	for(int i = 0; i < temp.size() && piece == null; i++){
+        	outerloop:
+        	for(PieceFrequency pf : copy){
         		//Rarest possible piece to get
-        		int possiblePiece = temp.get(i).getPieceNumber();
-        		for(int j = 0; j< wantedPieces.size(); j++){
-        			if(wantedPieces.get(j).intValue() == possiblePiece && havePieces.get(possiblePiece)){
+        		int possiblePiece = pf.getPieceNumber();
+        		//Check that we want the piece, and the peer has the piece
+        		for(Integer i : wantedPieces){
+        			if(i.intValue() == possiblePiece && havePieces.get(possiblePiece)){
         				//We want the piece and peer has the piece
         				piece = possiblePiece;
+        				//Set the frequency to really high since we already have the piece, and will not need to get it again
         				pieceFrequencies.get(possiblePiece).setFrequency(pieceFrequencies.get(possiblePiece).getFrequency() + 999);
-        				break;
+        				break outerloop;
         			}
         		}
         	}
-        }
+       }
         
-        if(piece != null){
-        	return piece.intValue();
-        }else{
-        	return -1;
-        }
-
-//        synchronized (wantedPieces) {
-//            Integer piece = null;
-//            Iterator it = wantedPieces.iterator();
-//            while (piece == null && it.hasNext()) {
-//                Integer i = (Integer)it.next();
-//                if (havePieces.get(i.intValue())) {
-//                    it.remove();
-//                    piece = i;
-//                }
-//            }
-//
-//            if (piece == null) {
-//                return -1;
-//            }
-//
-//            // We add it back at the back of the list. It will be removed
-//            // if gotPiece is called later. This means that the last
-//            // couple of pieces might very well be asked from multiple
-//            // peers but that is OK.
-//            wantedPieces.add(piece);
-//
-//            return piece.intValue();
+        //If piece still == null, we did not find a piece that we wanted
+        //in that case return -1
+        return ((piece != null) ? piece.intValue() : -1);
+        
+//        if(piece != null){
+//        	return piece.intValue();
+//        }else{
+//        	return -1;
 //        }
     }
 
